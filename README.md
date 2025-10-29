@@ -21,6 +21,7 @@ Compares **single-chain Metropolis-Hastings MCMC** and **greedy iterative select
 ---
 
 ## Results
+<img width="835" height="263" alt="Screenshot 2025-10-29 at 8 44 17 PM" src="https://github.com/user-attachments/assets/668486bd-b2fd-4638-b44e-562b6fbdffd0" />
 
 | Algorithm | Final TI | Identity to WT | p-value (vs Greedy) |
 |---------|----------|----------------|---------------------|
