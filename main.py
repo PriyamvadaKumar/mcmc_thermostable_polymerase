@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """
 MCMC vs. Greedy for Thermostable E. coli DNA Polymerase I
-PhD Writing Sample — Bioinformatics
 Author: Priyamvada Kumar
 """
 
