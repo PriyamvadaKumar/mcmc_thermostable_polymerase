@@ -1,0 +1,86 @@
+{
+    "random_seed": 42,
+    "timestamp": "2025-10-30 20:20:04",
+    "python_version": "3.11.5",
+    "config": {
+        "BETA_TI_VALUES": [
+            1,
+            2,
+            5,
+            10,
+            20,
+            50,
+            100
+        ],
+        "BETA_ID_VALUES": [
+            0.1,
+            0.2,
+            0.5,
+            1,
+            2,
+            5,
+            10
+        ],
+        "N_REPS": 5,
+        "N_STEPS_PILOT": 1000,
+        "N_STEPS_PROD": 10000
+    },
+    "results": {
+        "static_best": {
+            "beta_ti": 100.0,
+            "beta_id": 0.5
+        },
+        "dynamic_best": {
+            "beta_ti": 1.0,
+            "beta_id": 0.1
+        },
+        "static_runtime_s": 75.282,
+        "dynamic_runtime_s": 74.396
+    },
+    "summary": {
+        "static": {
+            "TI_mean": {
+                "Greedy": 1308.5183,
+                "MCMC_new": 1078.8369,
+                "MCMC_old": 755.8606
+            },
+            "TI_std": {
+                "Greedy": 7.6775,
+                "MCMC_new": 11.976,
+                "MCMC_old": 15.3615
+            },
+            "Identity_mean": {
+                "Greedy": 0.1856,
+                "MCMC_new": 0.2278,
+                "MCMC_old": 0.0651
+            },
+            "Identity_std": {
+                "Greedy": 0.0125,
+                "MCMC_new": 0.0038,
+                "MCMC_old": 0.0068
+            }
+        },
+        "dynamic": {
+            "TI_mean": {
+                "Greedy": 1306.8488,
+                "MCMC_new": 752.3896,
+                "MCMC_old": 763.8629
+            },
+            "TI_std": {
+                "Greedy": 6.5521,
+                "MCMC_new": 27.1731,
+                "MCMC_old": 18.0912
+            },
+            "Identity_mean": {
+                "Greedy": 0.1767,
+                "MCMC_new": 0.0683,
+                "MCMC_old": 0.0683
+            },
+            "Identity_std": {
+                "Greedy": 0.0116,
+                "MCMC_new": 0.0089,
+                "MCMC_old": 0.0074
+            }
+        }
+    }
+}

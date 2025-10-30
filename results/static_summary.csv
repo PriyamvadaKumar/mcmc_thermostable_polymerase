@@ -1,0 +1,4 @@
+alg,TI_mean,TI_std,Identity_mean,Identity_std
+Greedy,1308.5183,7.6775,0.1856,0.0125
+MCMC_new,1078.8369,11.976,0.2278,0.0038
+MCMC_old,755.8606,15.3615,0.0651,0.0068
