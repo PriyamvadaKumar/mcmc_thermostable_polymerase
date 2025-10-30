@@ -45,7 +45,7 @@ Directed evolution through iterative mutation and selection is a central approac
 ```bash
 git clone https://github.com/yourusername/mcmc_thermostable_polymerase.git
 cd mcmc_thermostable_polymerase
-pip install numpy pandas matplotlib seaborn tqdm biopython
+pip install -r requirements.txt
 python main.py
 ```
 
