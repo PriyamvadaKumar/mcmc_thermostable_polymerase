@@ -1,169 +1,341 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """
-MCMC vs. Greedy for Thermostable E. coli DNA Polymerase I
+main.py 
 Author: Priyamvada Kumar
 """
 
-import os, random, warnings, requests, io
-import numpy as np, pandas as pd
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from scipy import stats
-from Bio import SeqIO
+import seaborn as sns
+import json, os, time
+from tqdm import tqdm
+import sys
 
-warnings.filterwarnings("ignore")
-
-# ====================== CONFIG ======================
-UNIPROT_ID = "P00582"
-FASTA_URL = f"https://www.uniprot.org/uniprot/{UNIPROT_ID}.fasta"
-ACTIVE_SITE = range(699, 712)  # 0-indexed
-N_MUTATIONS = 2
-TOTAL_PROPOSALS = 10_000
-N_REPLICATES = 30
+# ==============================================================
+# CONFIG
+# ==============================================================
+np.random.seed(42)
 SEED = 42
-OUTPUT_DIR = "results"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-random.seed(SEED)
-np.random.seed(SEED)
+BETA_TI_VALUES = [1, 2, 5, 10, 20, 50, 100]
+BETA_ID_VALUES = [0.1, 0.2, 0.5, 1, 2, 5, 10]
 
-# ====================== FETCH SEQUENCE (FIXED) ======================
-def fetch_seq():
-    response = requests.get(FASTA_URL)
-    response.raise_for_status()
-    fasta_io = io.StringIO(response.text)  # Use StringIO
-    record = next(SeqIO.parse(fasta_io, "fasta"))
-    return str(record.seq)
+N_REPS = 5
+N_STEPS_PILOT = 1_000
+N_STEPS_PROD  = 10_000
 
-WT_SEQ = fetch_seq()
-L = len(WT_SEQ)
-print(f"Loaded {UNIPROT_ID}: {L} aa")
-
-# ====================== LOAD FULL P-INDEX (400 entries) ======================
-P_DF = pd.read_csv("data/p_index_full.csv", index_col=0)
-P_INDEX = P_DF.stack().to_dict()  # (aa1, aa2) → value
-
-def ti(seq):
-    if len(seq) < 2: return 0.0
-    total = sum(P_INDEX.get(seq[i:i+2], 100.0) for i in range(len(seq)-1))
-    return (100 / (len(seq)-1)) * (total - 9372) / 398
-
-ti_wt = ti(WT_SEQ)
-print(f"Wild-type TI: {ti_wt:.3f}")
-
-# ====================== TOOLS ======================
+WT_SEQ = "".join(np.random.choice(list("ACDEFGHIKLMNPQRSTVWY"), size=928))
+PROTECTED = range(699, 712)
 AA = "ACDEFGHIKLMNPQRSTVWY"
+AA_IDX = {aa: i for i, aa in enumerate(AA)}
+P_INDEX = np.random.normal(loc=0.2, scale=0.8, size=(20, 20))
 
-def mutate(seq, n=2, protected=None):
-    s = list(seq)
-    pos = [i for i in range(len(s)) if protected is None or i not in protected]
-    if len(pos) < n: return seq
-    for p in random.sample(pos, n):
-        cur = s[p]
-        s[p] = random.choice([a for a in AA if a != cur])
-    return "".join(s)
+os.makedirs("results", exist_ok=True)
+print(f"\n=== Running final benchmark (seed {SEED}) ===\n")
 
-def identity(a, b):
-    return sum(x == y for x, y in zip(a, b)) / len(a)
+# ==============================================================
+# HELPERS
+# ==============================================================
+def mutate(seq: str, n_mut: int = 2) -> str:
+    seq = list(seq)
+    mutable = [i for i in range(len(seq)) if i not in PROTECTED]
+    sites = np.random.choice(mutable, size=n_mut, replace=False)
+    for pos in sites:
+        cur = seq[pos]
+        seq[pos] = np.random.choice([a for a in AA if a != cur])
+    return "".join(seq)
 
-# ====================== MCMC (Single MH) ======================
-def mcmc_run(wt, steps=10_000):
-    cur = wt
-    ti_hist = [ti(cur)]
-    sim_hist = [1.0]
-    for _ in range(steps):
-        cand = mutate(cur, n=N_MUTATIONS, protected=ACTIVE_SITE)
-        ti_old, ti_new = ti(cur), ti(cand)
-        sim = identity(cand, wt)
-        score = (ti_new / ti_old) * sim if ti_old > 0 else 0
-        if score > 1 or random.random() < score:
-            cur = cand
-        ti_hist.append(ti(cur))
-        sim_hist.append(identity(cur, wt))
-    return cur, ti_hist, sim_hist
+def ti_score(seq: str) -> float:
+    return sum(P_INDEX[AA_IDX[seq[i]], AA_IDX[seq[i+1]]] for i in range(len(seq)-1))
 
-# ====================== GREEDY (100 gen × 100 child) ======================
-def greedy_run(wt, gens=100, children=100):
-    parent = wt
-    ti_hist = [ti(parent)]
-    sim_hist = [1.0]
-    for _ in range(gens):
-        offs = [mutate(parent, n=N_MUTATIONS, protected=ACTIVE_SITE) for _ in range(children)]
-        ti_vals = [ti(c) for c in offs]
-        sim_vals = [identity(c, wt) for c in offs]
-        best_idx = np.argmax(ti_vals)
-        if random.random() < sim_vals[best_idx]:
-            parent = offs[best_idx]
-        ti_hist.append(ti(parent))
-        sim_hist.append(identity(parent, wt))
-    return parent, ti_hist, sim_hist
+def identity(seq: str) -> float:
+    return sum(a == b for a, b in zip(seq, WT_SEQ)) / len(WT_SEQ)
 
-# ====================== RUN 30 REPLICATES ======================
-results = {"MCMC": [], "Greedy": []}
-for alg in ["MCMC", "Greedy"]:
-    func = mcmc_run if alg == "MCMC" else greedy_run
-    kwargs = {"steps": TOTAL_PROPOSALS} if alg == "MCMC" else {"gens": 100, "children": 100}
-    for rep in range(N_REPLICATES):
-        print(f"{alg} rep {rep+1}/{N_REPLICATES}", end="\r")
-        final_seq, ti_traj, sim_traj = func(WT_SEQ, **kwargs)
-        results[alg].append({
-            "final_ti": ti_traj[-1],
-            "final_sim": sim_traj[-1],
-            "ti_traj": ti_traj,
-            "sim_traj": sim_traj
-        })
-    print()
+# ==============================================================
+# PILOT GRID
+# ==============================================================
+def simulate_pilot(beta_ti, beta_id, dynamic):
+    seq = WT_SEQ
+    ti = ti_score(seq)
+    acc = 0
+    for _ in range(N_STEPS_PILOT):
+        cand = mutate(seq)
+        cand_ti = ti_score(cand)
+        if dynamic:
+            drift = np.log(beta_ti + 1) * 0.8
+            stab = np.exp(-beta_id / 10)
+            val = cand_ti + drift * stab
+            curr_val = ti + drift * stab
+        else:
+            val = cand_ti + np.random.normal(0, 0.5)
+            curr_val = ti + np.random.normal(0, 0.5)
+        if val > curr_val or np.random.rand() < np.exp(val - curr_val):
+            seq, ti = cand, cand_ti
+            acc += 1
+    return ti, acc / N_STEPS_PILOT
 
-# ====================== ANALYZE ======================
-df = pd.DataFrame([
-    {"alg": k.upper(), "rep": i, "TI": r["final_ti"], "Similarity": r["final_sim"]}
-    for k, reps in results.items() for i, r in enumerate(reps)
-])
+def pilot_grid(dynamic):
+    results = []
+    prefix = "dynamic_" if dynamic else "static_"
+    start = time.time()
+    for bt in tqdm(BETA_TI_VALUES, desc=f"β_ti grid ({'Dynamic' if dynamic else 'Static'})"):
+        for bi in BETA_ID_VALUES:
+            tis, accs = zip(*[simulate_pilot(bt, bi, dynamic) for _ in range(N_REPS)])
+            results.append({"beta_ti": bt, "beta_id": bi, "mean_TI": np.mean(tis), "mean_acc": np.mean(accs)})
+    df = pd.DataFrame(results)
+    df["score"] = df["mean_TI"] * df["mean_acc"]
+    best = df.loc[df["score"].idxmax()]
+    df.to_csv(f"results/{prefix}pilot_grid_summary.csv", index=False)
+    for col, name in [("mean_TI", "TI_mean"), ("mean_acc", "Identity_mean")]:
+        norm = (df[col] - df[col].min()) / (df[col].max() - df[col].min() + 1e-12)
+        pivot = df.assign(**{f"{col}_norm": norm}).pivot(index="beta_ti", columns="beta_id", values=f"{col}_norm")
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(pivot, annot=False, cmap="viridis")
+        plt.title(f"{prefix}{name} heatmap (normalized)")
+        plt.tight_layout()
+        plt.savefig(f"results/{prefix}{name}_heatmap.png", dpi=300)
+        plt.close()
+    elapsed = time.time() - start
+    print(f"{prefix} grid done in {elapsed:.2f}s → β_ti={best['beta_ti']}, β_id={best['beta_id']}\n")
+    return best["beta_ti"], best["beta_id"], elapsed
 
-summary = df.groupby("alg").agg(
-    TI_mean=("TI","mean"), TI_std=("TI","std"),
-    Sim_mean=("Similarity","mean"), Sim_std=("Similarity","std")
-).round(4)
+# ==============================================================
+# ALGORITHMS
+# ==============================================================
 
-print("\n=== FINAL PERFORMANCE (30 replicates) ===")
-print(summary)
+"""Greedy step: select highest scoring among 10 random candidates."""
+"""MCMC-old: conservative MH with half beta_ti."""
+"""MCMC-new: weighted MH with drift-stabilizer adjustment."""
 
-mcmc_ti = df[df["alg"]=="MCMC"]["TI"]
-greedy_ti = df[df["alg"]=="GREEDY"]["TI"]
-_, p_ti = stats.ranksums(mcmc_ti, greedy_ti)
+def greedy_step(seq, ti, beta_ti, beta_id, dynamic):
+    best_seq, best_ti = seq, ti
+    for _ in range(10):
+        cand = mutate(seq)
+        cand_ti = ti_score(cand)
+        cand_id = identity(cand)
+        if dynamic:
+            drift = np.log(beta_ti + 1) * 0.8
+            stab = np.exp(-beta_id / 10)
+            val = cand_ti + drift * stab - beta_id * (1 - cand_id)
+        else:
+            val = cand_ti - beta_id * (1 - cand_id)
+        curr_val = best_ti + (drift * stab if dynamic else 0) - beta_id * (1 - identity(best_seq))
+        if val > curr_val:
+            best_seq, best_ti = cand, cand_ti
+    return best_seq, best_ti
 
-mcmc_sim = df[df["alg"]=="MCMC"]["Similarity"]
-greedy_sim = df[df["alg"]=="GREEDY"]["Similarity"]
-_, p_sim = stats.ranksums(mcmc_sim, greedy_sim)
+def mcmc_old_step(seq, ti, beta_ti, beta_id, dynamic):
+    cand = mutate(seq)
+    cand_ti = ti_score(cand)
+    cand_id = identity(cand)
+    bt = beta_ti / 2
+    if dynamic:
+        drift = np.log(bt + 1) * 0.8
+        stab = np.exp(-beta_id / 10)
+        curr_val = ti + drift * stab - beta_id * (1 - identity(seq))
+        cand_val = cand_ti + drift * stab - beta_id * (1 - cand_id)
+    else:
+        curr_val = ti - beta_id * (1 - identity(seq))
+        cand_val = cand_ti - beta_id * (1 - cand_id)
+    if cand_val > curr_val or np.random.rand() < np.exp(cand_val - curr_val):
+        return cand, cand_ti
+    return seq, ti
 
-print(f"Wilcoxon TI p-value: {p_ti:.2e}")
-print(f"Wilcoxon Similarity p-value: {p_sim:.2e}")
+def mcmc_new_step(seq, ti, beta_ti, beta_id, dynamic):
+    cand = mutate(seq)
+    cand_ti = ti_score(cand)
+    cand_id = identity(cand)
+    curr_score = beta_ti * ti - beta_id * (1 - identity(seq))
+    cand_score = beta_ti * cand_ti - beta_id * (1 - cand_id)
+    if dynamic:
+        drift = np.log(beta_ti + 1) * 0.8
+        stab = np.exp(-beta_id / 10)
+        curr_score += drift * stab
+        cand_score += drift * stab
+    if cand_score > curr_score or np.random.rand() < np.exp(cand_score - curr_score):
+        return cand, cand_ti
+    return seq, ti
 
-# ====================== PLOT ======================
-plt.figure(figsize=(12,5))
+def run_algorithm(alg, beta_ti, beta_id, dynamic):
+    seq = WT_SEQ
+    ti = ti_score(seq)
+    step_fn = {
+        "Greedy": lambda s, t: greedy_step(s, t, beta_ti, beta_id, dynamic),
+        "MCMC_old": lambda s, t: mcmc_old_step(s, t, beta_ti, beta_id, dynamic),
+        "MCMC_new": lambda s, t: mcmc_new_step(s, t, beta_ti, beta_id, dynamic),
+    }[alg]
+    for _ in range(N_STEPS_PROD):
+        seq, ti = step_fn(seq, ti)
+    return ti, identity(seq)
 
-plt.subplot(1,2,1)
-for alg, col in zip(["MCMC","Greedy"], ["C0","C1"]):
-    trajs = [r["ti_traj"] for r in results[alg]]
-    mean = np.mean(trajs, axis=0); std = np.std(trajs, axis=0)
-    x = np.arange(len(mean))
-    plt.plot(x, mean, label=alg, color=col)
-    plt.fill_between(x, mean-std, mean+std, color=col, alpha=0.2)
-plt.title("TI Trajectory"); plt.xlabel("Step / Generation"); plt.ylabel("TI"); plt.legend()
+def benchmark(beta_ti, beta_id, prefix):
+    records = []
+    for alg in ["Greedy", "MCMC_new", "MCMC_old"]:
+        for rep in range(N_REPS):
+            ti, iid = run_algorithm(alg, beta_ti, beta_id, prefix.startswith("dynamic"))
+            records.append({"alg": alg, "rep": rep, "TI": ti, "Identity": iid})
+    df = pd.DataFrame(records)
+    df.to_csv(f"results/{prefix}supplement_final_metrics.csv", index=False)
+    
+    # Fixed: use string aggregations to avoid FutureWarning
+    summary = df.groupby("alg").agg({"TI": ["mean", "std"], "Identity": ["mean", "std"]})
+    summary.columns = ["_".join(col).strip() for col in summary.columns]
+    summary = summary.round(4)
+    summary.to_csv(f"results/{prefix}summary.csv")
+    return summary
 
-plt.subplot(1,2,2)
-for alg, col in zip(["MCMC","Greedy"], ["C0","C1"]):
-    trajs = [r["sim_traj"] for r in results[alg]]
-    mean = np.mean(trajs, axis=0); std = np.std(trajs, axis=0)
-    x = np.arange(len(mean))
-    plt.plot(x, mean, label=alg, color=col)
-    plt.fill_between(x, mean-std, mean+std, color=col, alpha=0.2)
-plt.title("Sequence Similarity"); plt.xlabel("Step / Generation"); plt.ylabel("Identity to WT"); plt.legend()
 
-plt.tight_layout()
-plt.savefig(f"{OUTPUT_DIR}/trajectories.png", dpi=300)
-plt.show()
 
-# ====================== SAVE ======================
-df.to_csv(f"{OUTPUT_DIR}/supplement_final_metrics.csv", index=False)
-summary.to_csv(f"{OUTPUT_DIR}/summary.csv")
-print(f"\nResults saved to: {OUTPUT_DIR}/")
+# Comparison plot
+def plot_comparison(static, dynamic):
+    metrics = ["TI_mean", "Identity_mean"]
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))  # Slightly wider
+    algorithms = static.index.tolist()  # ['Greedy', 'MCMC_new', 'MCMC_old']
+    x = np.arange(len(algorithms))
+    w = 0.35
+
+    for i, m in enumerate(metrics):
+        # Means
+        static_mean = static[m].values
+        dynamic_mean = dynamic[m].values
+        # Std dev
+        static_std = static[m.replace('_mean', '_std')].values
+        dynamic_std = dynamic[m.replace('_mean', '_std')].values
+
+        axes[i].bar(x - w/2, static_mean, w, yerr=static_std, capsize=5,
+                    label="Static", color='#1f77b4', alpha=0.8)
+        axes[i].bar(x + w/2, dynamic_mean, w, yerr=dynamic_std, capsize=5,
+                    label="Dynamic", color='#ff7f0e', alpha=0.8)
+
+        axes[i].set_xticks(x)
+        axes[i].set_xticklabels(algorithms, rotation=45, ha='right')  # KEY LINE
+        axes[i].set_title(m.replace("_mean", ""))
+        axes[i].set_ylabel(m.replace("_mean", "") + " (mean ± std)")
+        axes[i].legend()
+
+    plt.tight_layout(pad=2.0)  # Extra padding
+    plt.savefig("results/static_vs_dynamic_comparison.png",
+                 dpi=300, bbox_inches='tight', pad_inches=0.3)  # Extra pad
+    plt.close()
+
+
+# ==============================================================
+# RUN
+# ==============================================================
+opt_static = pilot_grid(dynamic=False)
+opt_dynamic = pilot_grid(dynamic=True)
+
+summary_static = benchmark(opt_static[0], opt_static[1], "static_")
+summary_dynamic = benchmark(opt_dynamic[0], opt_dynamic[1], "dynamic_")
+
+print("--- Static summary ---")
+print(summary_static)
+print("\n--- Dynamic summary ---")
+print(summary_dynamic)
+
+plot_comparison(summary_static, summary_dynamic)
+
+
+# ==============================================================
+# CONVERGENCE PLOTS
+# ==============================================================
+def run_trace(alg, beta_ti, beta_id, dynamic, n_steps=2000):
+    """Run a short production trace to record TI and acceptance over steps."""
+    seq = WT_SEQ
+    ti = ti_score(seq)
+    ti_trace = []
+    acc_trace = []
+    accept_count = 0
+
+    step_fn = {
+        "Greedy": lambda s, t: greedy_step(s, t, beta_ti, beta_id, dynamic),
+        "MCMC_old": lambda s, t: mcmc_old_step(s, t, beta_ti, beta_id, dynamic),
+        "MCMC_new": lambda s, t: mcmc_new_step(s, t, beta_ti, beta_id, dynamic),
+    }[alg]
+
+    for step in range(1, n_steps + 1):
+        old_ti = ti
+        seq, ti = step_fn(seq, ti)
+        if ti != old_ti:
+            accept_count += 1
+        ti_trace.append(ti)
+        acc_trace.append(accept_count / step)
+
+    return pd.DataFrame({
+        "step": np.arange(1, n_steps + 1),
+        "TI": ti_trace,
+        "Acceptance": acc_trace
+    })
+
+
+def plot_convergence(beta_ti_static, beta_id_static, beta_ti_dynamic, beta_id_dynamic):
+    """Generate convergence traces for each algorithm under static and dynamic models."""
+    os.makedirs("results/convergence", exist_ok=True)
+    n_steps = 2000  # Compact: enough to visualize trends
+
+    for alg in ["Greedy", "MCMC_new", "MCMC_old"]:
+        print(f"Running convergence trace for {alg}...")
+        df_static = run_trace(alg, beta_ti_static, beta_id_static, dynamic=False, n_steps=n_steps)
+        df_dynamic = run_trace(alg, beta_ti_dynamic, beta_id_dynamic, dynamic=True, n_steps=n_steps)
+
+        fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+        plt.suptitle(f"Convergence of {alg}", fontsize=14, fontweight="bold")
+
+        # TI trace
+        axes[0].plot(df_static["step"], df_static["TI"], label="Static", color="#1f77b4")
+        axes[0].plot(df_dynamic["step"], df_dynamic["TI"], label="Dynamic", color="#ff7f0e")
+        axes[0].set_xlabel("Step")
+        axes[0].set_ylabel("Thermostability Index (TI)")
+        axes[0].set_title("TI Convergence")
+        axes[0].legend()
+        axes[0].grid(alpha=0.3)
+
+        # Acceptance trace
+        axes[1].plot(df_static["step"], df_static["Acceptance"], label="Static", color="#1f77b4")
+        axes[1].plot(df_dynamic["step"], df_dynamic["Acceptance"], label="Dynamic", color="#ff7f0e")
+        axes[1].set_xlabel("Step")
+        axes[1].set_ylabel("Acceptance Rate")
+        axes[1].set_ylim(0, 1)
+        axes[1].set_title("Acceptance Rate Over Time")
+        axes[1].legend()
+        axes[1].grid(alpha=0.3)
+
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        out_path = f"results/convergence/{alg.lower()}_convergence.png"
+        plt.savefig(out_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        print(f"  → Saved convergence trace to {out_path}\n")
+
+
+# Generate convergence traces
+plot_convergence(opt_static[0], opt_static[1], opt_dynamic[0], opt_dynamic[1])
+
+
+# Run report
+run_report = {
+    "random_seed": SEED,
+    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    "python_version": sys.version.split()[0],
+    "config": {
+        "BETA_TI_VALUES": BETA_TI_VALUES,
+        "BETA_ID_VALUES": BETA_ID_VALUES,
+        "N_REPS": N_REPS,
+        "N_STEPS_PILOT": N_STEPS_PILOT,
+        "N_STEPS_PROD": N_STEPS_PROD
+    },
+    "results": {
+        "static_best": {"beta_ti": opt_static[0], "beta_id": opt_static[1]},
+        "dynamic_best": {"beta_ti": opt_dynamic[0], "beta_id": opt_dynamic[1]},
+        "static_runtime_s": round(opt_static[2], 3),
+        "dynamic_runtime_s": round(opt_dynamic[2], 3)
+    },
+    "summary": {
+        "static": summary_static.to_dict(),
+        "dynamic": summary_dynamic.to_dict()
+    }
+}
+with open("results/run_report.json", "w") as f:
+    json.dump(run_report, f, indent=4)
+
+print("\nAll results saved in results/ (including run_report.json)")
