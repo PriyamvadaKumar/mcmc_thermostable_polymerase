@@ -1,7 +1,6 @@
-biopython
-pandas
-numpy
-scipy
-matplotlib
-seaborn
-requests
+numpy>=1.21.0
+pandas>=1.3.0
+matplotlib>=3.5.0
+seaborn>=0.11.0
+tqdm>=4.60.0
+biopython>=1.78
