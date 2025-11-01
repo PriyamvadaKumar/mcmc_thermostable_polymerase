@@ -12,9 +12,9 @@ import json, os, time
 from tqdm import tqdm
 import sys
 
-# ==============================================================
+
 # CONFIG
-# ==============================================================
+
 np.random.seed(42)
 SEED = 42
 
@@ -34,9 +34,9 @@ P_INDEX = np.random.normal(loc=0.2, scale=0.8, size=(20, 20))
 os.makedirs("results", exist_ok=True)
 print(f"\n=== Running final benchmark (seed {SEED}) ===\n")
 
-# ==============================================================
+
 # HELPERS
-# ==============================================================
+
 def mutate(seq: str, n_mut: int = 2) -> str:
     seq = list(seq)
     mutable = [i for i in range(len(seq)) if i not in PROTECTED]
@@ -52,9 +52,7 @@ def ti_score(seq: str) -> float:
 def identity(seq: str) -> float:
     return sum(a == b for a, b in zip(seq, WT_SEQ)) / len(WT_SEQ)
 
-# ==============================================================
 # PILOT GRID
-# ==============================================================
 def simulate_pilot(beta_ti, beta_id, dynamic):
     seq = WT_SEQ
     ti = ti_score(seq)
@@ -100,9 +98,7 @@ def pilot_grid(dynamic):
     print(f"{prefix} grid done in {elapsed:.2f}s → β_ti={best['beta_ti']}, β_id={best['beta_id']}\n")
     return best["beta_ti"], best["beta_id"], elapsed
 
-# ==============================================================
 # ALGORITHMS
-# ==============================================================
 
 """Greedy step: select highest scoring among 10 random candidates."""
 """MCMC-old: conservative MH with half beta_ti."""
@@ -185,9 +181,8 @@ def benchmark(beta_ti, beta_id, prefix):
     summary.to_csv(f"results/{prefix}summary.csv")
     return summary
 
-
-
 # Comparison plot
+
 def plot_comparison(static, dynamic):
     metrics = ["TI_mean", "Identity_mean"]
     fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))  # Slightly wider
@@ -220,9 +215,8 @@ def plot_comparison(static, dynamic):
     plt.close()
 
 
-# ==============================================================
 # RUN
-# ==============================================================
+
 opt_static = pilot_grid(dynamic=False)
 opt_dynamic = pilot_grid(dynamic=True)
 
@@ -237,9 +231,8 @@ print(summary_dynamic)
 plot_comparison(summary_static, summary_dynamic)
 
 
-# ==============================================================
 # CONVERGENCE PLOTS
-# ==============================================================
+
 def run_trace(alg, beta_ti, beta_id, dynamic, n_steps=2000):
     """Run a short production trace to record TI and acceptance over steps."""
     seq = WT_SEQ
