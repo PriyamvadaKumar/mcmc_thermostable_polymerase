@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-main.py 
-Author: Priyamvada Kumar
-"""
 
 import numpy as np
 import pandas as pd
